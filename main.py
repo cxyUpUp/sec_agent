@@ -133,7 +133,7 @@ def run_agent(user_input: str, user_id: str = DEFAULT_USER_ID, with_trace: bool 
 
     print(f"\n[User]: {user_input}")
 
-    # 1️⃣ 输入检测（防prompt injection）
+    # 输入检测（防prompt injection）
     injection = detect_injection(user_input)
     trace["injection_detection"] = injection
     if injection.get("blocked"):
@@ -142,12 +142,12 @@ def run_agent(user_input: str, user_id: str = DEFAULT_USER_ID, with_trace: bool 
         output = "[Blocked] Potential prompt injection detected"
         return (output, trace) if with_trace else output
 
-    # 2️⃣ 调用LLM
+    # 调用LLM
     llm_output = call_llm(user_input)
     trace["llm_called"] = True
     # print(f"[LLM Raw Output]: {llm_output}")
 
-    # 3️⃣ 解析action
+    # 解析action
     action, params, schema_errors, raw_is_json = parse_action(llm_output)
     trace["action"] = action
     trace["schema_errors"] = schema_errors
@@ -155,14 +155,14 @@ def run_agent(user_input: str, user_id: str = DEFAULT_USER_ID, with_trace: bool 
     if schema_errors:
         print("[Schema] Blocked invalid tool call:", schema_errors)
 
-    # 4️⃣ 工具安全检查（核心）
+    # 工具安全检查（核心）
     if not tool_guard(action, params):
         trace["blocked"] = True
         trace["block_reason"] = "unsafe_tool_execution"
         output = "[Blocked] Unsafe tool execution"
         return (output, trace) if with_trace else output
 
-    # 5️⃣ 执行工具
+    # 执行工具
     if action in TOOL_MAP:
         audit_ctx = SESSION_MANAGER.before_tool_execution(user_id, action, params)
         trace["privacy_session"] = {
@@ -184,7 +184,7 @@ def run_agent(user_input: str, user_id: str = DEFAULT_USER_ID, with_trace: bool 
     else:
         result = llm_output  # fallback
 
-    # 6️⃣ 输出过滤
+    # 输出过滤
     safe_result = filter_output(result)
 
     output = handle_llm_output(safe_result)
