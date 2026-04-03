@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sec_Agent Demo UI</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1>Sec_Agent Console</h1>
+        <p class="subtitle">Security-aware Agent with secure channel and evaluation toolkit</p>
+      </div>
+      <div class="status-wrap">
+        <span id="authStatus" class="status-badge status-auth">Not signed in</span>
+        <span id="secureStatus" class="status-badge">Secure mode: off</span>
+      </div>
+    </header>
+
+    <section class="workspace">
+      <aside class="panel card">
+        <h2>Account</h2>
+        <div class="row">
+          <label for="authUser">Username</label>
+          <input id="authUser" type="text" placeholder="your_username" />
+        </div>
+        <div class="row">
+          <label for="authPass">Password</label>
+          <input id="authPass" type="password" placeholder="at least 6 chars" />
+        </div>
+        <div class="buttons">
+          <button id="registerBtn" class="btn btn-muted">Register</button>
+          <button id="loginBtn" class="btn btn-primary">Login</button>
+          <button id="logoutBtn" class="btn btn-danger">Logout</button>
+        </div>
+        <p id="authHint" class="hint">Please register/login first.</p>
+
+        <hr class="sep" />
+        <h2>Agent Settings</h2>
+        <div class="row">
+          <label for="userId">User ID</label>
+          <input id="userId" type="text" value="demo_user" disabled />
+        </div>
+        <div class="row row-inline">
+          <label class="checkbox">
+            <input id="secureMode" type="checkbox" />
+            Use Secure Mode (/chat/secure)
+          </label>
+        </div>
+        <div class="row">
+          <label for="passphrase">Secure Passphrase</label>
+          <input id="passphrase" type="password" value="demo-pass-123" />
+        </div>
+        <div class="buttons stack">
+          <button id="sessionBtn" class="btn btn-muted">Get Session</button>
+          <button id="evalBtn" class="btn btn-muted">Run Eval</button>
+          <button id="resetSecureBtn" class="btn btn-danger">Reset Secure Session</button>
+        </div>
+      </aside>
+
+      <section class="chat card">
+        <div id="chatLog" class="chat-log">
+          <div class="bubble bubble-agent">Welcome. Ask Sec_Agent anything.</div>
+        </div>
+        <div class="composer">
+          <textarea id="message" rows="3" placeholder="Type your message and press Enter..."></textarea>
+          <button id="sendBtn" class="btn btn-primary">Send</button>
+        </div>
+      </section>
+    </section>
+
+    <section class="insights">
+      <article class="card">
+        <h3>Latest Answer</h3>
+        <pre id="answer" class="pre">No response yet.</pre>
+      </article>
+      <article class="card">
+        <h3>Security Trace</h3>
+        <pre id="trace" class="pre">No trace yet.</pre>
+      </article>
+      <article class="card">
+        <h3>Session / Eval</h3>
+        <pre id="meta" class="pre">No data yet.</pre>
+      </article>
+    </section>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>

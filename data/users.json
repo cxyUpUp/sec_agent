@@ -1,0 +1,14 @@
+{
+  "users": {
+    "ccc": {
+      "salt": "44fa6cc2eb3dcb17a716bca43a51692f",
+      "password_hash": "4d1c25b07c221f3b9e1e7022f81d04158621cd86729066249d55cabd9d2dd3f8",
+      "created_at": 1774959214
+    },
+    "102": {
+      "salt": "09873df904576928481d08339a1f2e2e",
+      "password_hash": "2de97b0c33cacf7aaf1ad40d0582466588436b1ae51562f430816de86b8cc8f2",
+      "created_at": 1774959226
+    }
+  }
+}
