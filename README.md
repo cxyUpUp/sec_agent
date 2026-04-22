@@ -14,3 +14,5 @@ python -m uvicorn api.app:app --host 127.0.0.1 --port 8080
 
 
 - Log/Register: http://127.0.0.1:8080/ui
+- <img width="1647" height="815" alt="image" src="https://github.com/user-attachments/assets/30e6cfc3-411b-42fd-8f66-4934475fc661" />
+
