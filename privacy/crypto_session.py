@@ -2,6 +2,8 @@ import hashlib
 import secrets
 from dataclasses import dataclass
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 
 # RFC 3526 3072-bit MODP prime (same family as PCKA project params).
 _MODP_3072_PRIME = int(
@@ -58,6 +60,32 @@ def _int_to_bytes(value: int) -> bytes:
     return value.to_bytes((value.bit_length() + 7) // 8 or 1, "big")
 
 
+def pcka_aad_tool_payload(session_id: str, action: str, counter: int) -> bytes:
+    """Binding string for AES-GCM over tool params (PCKA tool key as AEAD secret)."""
+    return _sha256(
+        session_id.encode("utf-8"),
+        action.encode("utf-8"),
+        counter.to_bytes(8, "big"),
+        b"|pcka.tool|",
+    )
+
+
+def pcka_seal(tool_key: bytes, plaintext: bytes, aad: bytes) -> tuple[bytes, bytes]:
+    """AES-256-GCM encrypt; tool_key must be the 32-byte output of derive_tool_key."""
+    if len(tool_key) != 32:
+        raise ValueError("tool_key must be 32 bytes")
+    aes = AESGCM(tool_key)
+    nonce = secrets.token_bytes(12)
+    return nonce, aes.encrypt(nonce, plaintext, aad)
+
+
+def pcka_open(tool_key: bytes, nonce: bytes, ciphertext: bytes, aad: bytes) -> bytes:
+    if len(tool_key) != 32:
+        raise ValueError("tool_key must be 32 bytes")
+    aes = AESGCM(tool_key)
+    return aes.decrypt(nonce, ciphertext, aad)
+
+
 @dataclass
 class CryptoSession:
     session_id: str
@@ -95,8 +123,22 @@ class CryptoSession:
     def derive_tool_key(self, action: str) -> bytes:
         # PCKA send/server/receive shape:
         # alpha = H(k)^r', beta = alpha^sk, k' = beta^(1/r').
+        # r' is deterministic from (party_k, sid, action, counter) so the same tool key
+        # can be re-derived for AES-GCM open within this ratchet step (oblivious r' in a
+        # distributed PCKA would come from the peer instead of this PRF).
         action_bytes = action.encode("utf-8", errors="ignore")
-        r_prime = secrets.randbelow(self.order - 1) + 1
+        counter_bytes = self.counter.to_bytes(8, "big")
+        r_seed = int.from_bytes(
+            _sha256(
+                _int_to_bytes(self.party_k),
+                self.sid,
+                action_bytes,
+                counter_bytes,
+                b"|pcka.r|",
+            ),
+            "big",
+        )
+        r_prime = (r_seed % (self.order - 1)) + 1
         hk = _h_int(
             _int_to_bytes(self.party_k),
             b"|tool|",
@@ -107,7 +149,6 @@ class CryptoSession:
         beta = pow(alpha, self.server_sk, self.prime)
         inv_r_prime = pow(r_prime, -1, self.order)
         k_next = pow(beta, inv_r_prime, self.prime)
-        counter_bytes = self.counter.to_bytes(8, "big")
         return _sha256(
             _int_to_bytes(k_next),
             self.sid,
@@ -146,7 +187,7 @@ class CryptoSession:
 
 def create_session() -> CryptoSession:
     # Local two-party seeds for first runnable integration.
-    # In v3, this can be replaced by real user secret enrollment.
+    # Replace with real user/agent enrollment when wiring distributed PCKA.
     user_seed = secrets.token_bytes(16)
     agent_seed = secrets.token_bytes(16)
     return CryptoSession.init(user_seed=user_seed, agent_seed=agent_seed)
@@ -154,3 +195,16 @@ def create_session() -> CryptoSession:
 
 def key_fingerprint(key: bytes, size: int = 12) -> str:
     return hashlib.sha256(key).hexdigest()[:size]
+
+
+def derive_ratchet_material(key: bytes, counter: int, context: str) -> bytes:
+    if not isinstance(counter, int) or counter < 0:
+        raise ValueError("counter must be a non-negative integer")
+    context_bytes = context.encode("utf-8", errors="ignore")
+    counter_bytes = counter.to_bytes(8, "big")
+    return _sha256(
+        key,
+        b"|ratchet|",
+        context_bytes,
+        counter_bytes,
+    )

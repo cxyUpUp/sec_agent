@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from privacy.crypto_session import derive_ratchet_material, key_fingerprint
 
 
 def _sha256(*parts: bytes) -> bytes:
@@ -77,6 +78,8 @@ class SecureSession:
     secure_session_id: str
     user_id: str
     session_key: bytes
+    protocol_session_id: str
+    protocol_key_id: str
     ratchet_counter: int
     created_at: float
 
@@ -135,6 +138,7 @@ class SecureChannelManager:
         )
         return {
             "handshake_id": handshake_id,
+            "protocol": "pcka_ratchet",
             "sid": _b64e(sid),
             "beta": beta,
             "server_nonce": server_nonce,
@@ -182,6 +186,8 @@ class SecureChannelManager:
             secure_session_id=secure_session_id,
             user_id=pending.user_id,
             session_key=session_key,
+            protocol_session_id=_b64e(pending.sid),
+            protocol_key_id=key_fingerprint(session_key),
             ratchet_counter=0,
             created_at=time.time(),
         )
@@ -190,6 +196,7 @@ class SecureChannelManager:
         server_proof = _hmac_hex(session_key, b"server_finish")
         return {
             "secure_session_id": secure_session_id,
+            "protocol": "pcka_ratchet",
             "server_proof": server_proof,
         }
 
@@ -231,11 +238,15 @@ class SecureChannelManager:
         if sess is None:
             raise ValueError("invalid secure_session_id")
         sess.session_key = _sha256(
-            sess.session_key,
-            b"|ratchet|",
-            sess.ratchet_counter.to_bytes(8, "big"),
+            derive_ratchet_material(
+                key=sess.session_key,
+                counter=sess.ratchet_counter,
+                context=secure_session_id,
+            ),
+            b"|transport|",
         )
         sess.ratchet_counter += 1
+        sess.protocol_key_id = key_fingerprint(sess.session_key)
         return sess.ratchet_counter
 
     def get_session_meta(self, secure_session_id: str) -> dict:
@@ -246,6 +257,9 @@ class SecureChannelManager:
             "secure_session_id": sess.secure_session_id,
             "user_id": sess.user_id,
             "ratchet_counter": sess.ratchet_counter,
+            "protocol": "pcka_ratchet",
+            "protocol_session_id": sess.protocol_session_id,
+            "protocol_key_id": sess.protocol_key_id,
         }
 
 

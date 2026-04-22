@@ -13,6 +13,7 @@ from eval.run_eval import evaluate_all
 from main import run_agent
 from privacy.secure_channel import get_secure_channel_manager
 from privacy.session_manager import get_session_manager
+from security.guard import TOOL_POLICY, record_confirmation
 
 
 app = FastAPI(title="Sec_Agent API", version="0.1.0")
@@ -39,13 +40,16 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     blocked: bool
+    protocol_trace: dict
     security_trace: dict
 
 
 class SessionResponse(BaseModel):
     user_id: str
+    protocol: str = Field(default="pcka_ratchet")
     session_id: str
     counter: int
+    key_id: Optional[str] = None
 
 
 class AuthRegisterRequest(BaseModel):
@@ -63,6 +67,16 @@ class AuthTokenResponse(BaseModel):
     username: str
 
 
+class ConfirmToolRequest(BaseModel):
+    action: str
+
+
+class ConfirmToolResponse(BaseModel):
+    ok: bool
+    action: str
+    valid_for_s: int = 120
+
+
 class HandshakeStartRequest(BaseModel):
     alpha: str
     client_nonce: str
@@ -71,6 +85,7 @@ class HandshakeStartRequest(BaseModel):
 
 class HandshakeStartResponse(BaseModel):
     handshake_id: str
+    protocol: str = Field(default="pcka_ratchet")
     sid: str
     beta: str
     server_nonce: str
@@ -86,6 +101,7 @@ class HandshakeFinishRequest(BaseModel):
 
 class HandshakeFinishResponse(BaseModel):
     secure_session_id: str
+    protocol: str = Field(default="pcka_ratchet")
     server_proof: str
 
 
@@ -100,6 +116,7 @@ class SecureChatResponse(BaseModel):
     nonce_b64: str
     ciphertext_b64: str
     ratchet_counter: int
+    protocol_trace: dict
 
 
 def _get_current_user(authorization: Optional[str]) -> str:
@@ -159,12 +176,31 @@ def chat(req: ChatRequest, authorization: Optional[str] = Header(default=None)):
     try:
         answer, trace = run_agent(req.message, user_id=user_id, with_trace=True)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"agent runtime error: {type(exc).__name__}") from exc
+        raise HTTPException(
+            status_code=500,
+            detail=f"agent runtime error: {type(exc).__name__}: {exc}",
+        ) from exc
     return ChatResponse(
         answer=answer,
         blocked=bool(trace.get("blocked")),
+        protocol_trace=trace.get("protocol_trace", {}),
         security_trace=trace,
     )
+
+
+@app.post("/tools/confirm", response_model=ConfirmToolResponse)
+def confirm_sensitive_tool(req: ConfirmToolRequest, authorization: Optional[str] = Header(default=None)):
+    user_id = _get_current_user(authorization)
+    action = req.action.strip()
+    if not action:
+        raise HTTPException(status_code=400, detail="action must not be empty")
+    policy = TOOL_POLICY.get(action)
+    if policy is None:
+        raise HTTPException(status_code=400, detail=f"unknown tool action: {action}")
+    if not policy.get("sensitive", False):
+        raise HTTPException(status_code=400, detail=f"tool is not sensitive: {action}")
+    record_confirmation(user_id, action)
+    return ConfirmToolResponse(ok=True, action=action)
 
 
 @app.post("/pcka/handshake/start", response_model=HandshakeStartResponse)
@@ -207,16 +243,19 @@ def chat_secure(req: SecureChatRequest):
         )
         sess_meta = SECURE_CHANNEL.get_session_meta(req.secure_session_id)
         answer, trace = run_agent(user_message, user_id=sess_meta["user_id"], with_trace=True)
+        secure_protocol_before = SECURE_CHANNEL.get_session_meta(req.secure_session_id)
         payload = json.dumps(
             {
                 "answer": answer,
                 "blocked": bool(trace.get("blocked")),
+                "protocol_trace": trace.get("protocol_trace", {}),
                 "security_trace": trace,
             },
             ensure_ascii=False,
         )
         encrypted = SECURE_CHANNEL.encrypt_for_session(req.secure_session_id, payload)
         new_counter = SECURE_CHANNEL.ratchet(req.secure_session_id)
+        secure_protocol_after = SECURE_CHANNEL.get_session_meta(req.secure_session_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -226,6 +265,12 @@ def chat_secure(req: SecureChatRequest):
         nonce_b64=encrypted["nonce_b64"],
         ciphertext_b64=encrypted["ciphertext_b64"],
         ratchet_counter=new_counter,
+        protocol_trace={
+            "protocol": "pcka_ratchet",
+            "transport_before": secure_protocol_before,
+            "transport_after": secure_protocol_after,
+            "agent_protocol": trace.get("protocol_trace", {}),
+        },
     )
 
 
@@ -235,7 +280,14 @@ def get_session(user_id: str, authorization: Optional[str] = Header(default=None
     if user_id != auth_user:
         raise HTTPException(status_code=403, detail="forbidden")
     snapshot = SESSION_MANAGER.get_session_snapshot(user_id)
-    return SessionResponse(**snapshot)
+    proto = SESSION_MANAGER.build_protocol_snapshot(user_id)
+    return SessionResponse(
+        user_id=snapshot["user_id"],
+        protocol=proto.protocol,
+        session_id=snapshot["session_id"],
+        counter=snapshot["counter"],
+        key_id=proto.key_id,
+    )
 
 
 @app.get("/eval")

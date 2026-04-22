@@ -1,6 +1,7 @@
 import base64
 import binascii
 import re
+import secrets
 from typing import Any
 
 
@@ -61,3 +62,15 @@ def detect_injection(text: str) -> dict[str, Any]:
         "risk_score": round(min(risk_score, 1.0), 3),
         "reasons": reasons,
     }
+
+
+def build_session_token() -> str:
+    return secrets.token_hex(16)
+
+
+def wrap_user_input(user_input: str) -> str:
+    return (
+        "[USER_INPUT]\n"
+        f"{user_input}\n"
+        "[/USER_INPUT]"
+    )

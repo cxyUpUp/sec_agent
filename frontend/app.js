@@ -51,6 +51,16 @@ function extractDisplayAnswer(rawAnswer) {
       }
       // Tool protocol JSON without readable response: hide protocol details from users.
       if (typeof parsed.action === "string" && parsed.params && typeof parsed.params === "object") {
+        for (const key of ["response", "text", "message", "content", "value", "echo"]) {
+          if (typeof parsed.params[key] === "string" && parsed.params[key].trim()) {
+            return parsed.params[key];
+          }
+        }
+        for (const value of Object.values(parsed.params)) {
+          if (typeof value === "string" && value.trim()) {
+            return value;
+          }
+        }
         return "Tool executed. Result is available in trace panel.";
       }
     }

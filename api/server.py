@@ -61,7 +61,7 @@ class SecAgentHandler(BaseHTTPRequestHandler):
         return self._send_json({"error": "not_found"}, status=404)
 
 
-def run(host="127.0.0.1", port=8000):
+def run(host="127.0.0.1", port=8080):
     server = HTTPServer((host, port), SecAgentHandler)
     print(f"Sec_Agent backend running on http://{host}:{port}")
     server.serve_forever()
