@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -14,6 +15,7 @@ from main import run_agent
 from privacy.secure_channel import get_secure_channel_manager
 from privacy.session_manager import get_session_manager
 from security.guard import TOOL_POLICY, record_confirmation
+from security.input_filter import detect_injection
 
 
 app = FastAPI(title="Sec_Agent API", version="0.1.0")
@@ -31,6 +33,12 @@ app.add_middleware(
 
 if FRONTEND_DIR.exists():
     app.mount("/ui", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="ui")
+
+
+class AdmitRequest(BaseModel):
+    text: str
+    user_id: str = ""
+    task_id: Optional[int] = None
 
 
 class ChatRequest(BaseModel):
@@ -69,6 +77,7 @@ class AuthTokenResponse(BaseModel):
 
 class ConfirmToolRequest(BaseModel):
     action: str
+    params: Optional[dict] = None
 
 
 class ConfirmToolResponse(BaseModel):
@@ -146,6 +155,33 @@ def health():
     return {"status": "ok"}
 
 
+@app.post("/guard/admit")
+def guard_admit(req: AdmitRequest, authorization: Optional[str] = Header(default=None)):
+    """Admission only. Does not run tools or the agent loop.
+
+    ClawPlane calls this before a task is queued. Set SEC_AGENT_ADMIT_TOKEN
+    to require Authorization: Bearer <token> from the control plane.
+    """
+    expected = os.environ.get("SEC_AGENT_ADMIT_TOKEN", "").strip()
+    if expected:
+        if not authorization or not authorization.lower().startswith("bearer "):
+            raise HTTPException(status_code=401, detail="missing authorization header")
+        token = authorization.split(" ", 1)[1].strip()
+        if token != expected:
+            raise HTTPException(status_code=401, detail="invalid admit token")
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text must not be empty")
+    verdict = detect_injection(text)
+    reasons = verdict.get("reasons") or []
+    rule = ",".join(str(item) for item in reasons)
+    return {
+        "allow": not bool(verdict.get("blocked")),
+        "rule": rule,
+        "risk_score": verdict.get("risk_score", 0),
+    }
+
+
 @app.post("/auth/register")
 def auth_register(req: AuthRegisterRequest):
     try:
@@ -199,7 +235,7 @@ def confirm_sensitive_tool(req: ConfirmToolRequest, authorization: Optional[str]
         raise HTTPException(status_code=400, detail=f"unknown tool action: {action}")
     if not policy.get("sensitive", False):
         raise HTTPException(status_code=400, detail=f"tool is not sensitive: {action}")
-    record_confirmation(user_id, action)
+    record_confirmation(user_id, action, req.params)
     return ConfirmToolResponse(ok=True, action=action)
 
 

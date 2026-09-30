@@ -1,0 +1,23 @@
+.venv-traj/
+models/
+__pycache__/
+*.pyc
+#模型权重
+ *.pth
+ *.bin
+ *.pt
+ *.safetensors
+ *.ckpt
+ #数据集
+ dataset/
+ data/
+ datasets/
+ #输出缓存日志
+ logs/
+ output/
+ runs/
+ __pycache__/
+ *.pyc
+ venv/
+ env/
+ *.cache

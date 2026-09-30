@@ -9,9 +9,11 @@ from agent.parser import parse_action
 from agent.tools import TOOL_MAP
 from privacy.session_manager import get_session_manager
 from security.audit import append_audit_event
+from security.classifier import load_policy
 from security.guard import authorize_tool_call, record_confirmation
 from security.input_filter import build_session_token, detect_injection
 from security.output_filter import filter_output
+from security.rails import GuardrailSession
 
 SESSION_MANAGER = get_session_manager()
 DEFAULT_USER_ID = "local_user"
@@ -54,12 +56,26 @@ def _extract_pwned_password(user_input: str):
     return None
 
 
-def _extract_confirm_action(user_input: str) -> Optional[str]:
+def _extract_confirm_action(user_input: str) -> Optional[tuple[str, Optional[dict]]]:
+    """Return (action, params). params is None for an action-wide confirmation."""
     s = user_input.strip()
     if not s.lower().startswith("/confirm "):
         return None
-    action = s.split(" ", 1)[1].strip()
-    return action or None
+    rest = s.split(" ", 1)[1].strip()
+    if not rest:
+        return None
+    action, _, raw_params = rest.partition(" ")
+    if not raw_params:
+        return action, None
+    if not raw_params.startswith("{"):
+        return None
+    try:
+        params = json.loads(raw_params)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(params, dict):
+        return None
+    return action, params
 
 
 def _extract_base64_payload(user_input: str) -> Optional[str]:
@@ -181,13 +197,20 @@ def _run_protocol_step(user_id: str, action: str, params: dict, trace: dict):
     return audit_ctx
 
 
-def _execute_and_filter(action: str, params: dict, llm_output: str):
+def _execute_and_filter(action: str, params: dict, llm_output: str, rails: GuardrailSession):
     if action in TOOL_MAP:
         raw_result = TOOL_MAP[action](**params)
     else:
         raw_result = llm_output
-    safe_result = filter_output(raw_result)
-    return handle_llm_output(safe_result)
+    safe_result = filter_output(str(raw_result))
+    observed = rails.on_observation(action, safe_result)
+    text = observed.text if observed.action in {"quarantine", "redact"} else safe_result
+    text = handle_llm_output(text)
+    final = rails.on_output(text)
+    reason = observed.reason or final.reason
+    if final.action in {"block", "redact"}:
+        return final.text, reason
+    return text, observed.reason
 
 
 def run_agent(user_input: str, user_id: str = DEFAULT_USER_ID, with_trace: bool = False):
@@ -195,12 +218,17 @@ def run_agent(user_input: str, user_id: str = DEFAULT_USER_ID, with_trace: bool 
     trace = _new_trace(user_id, user_input)
     session_token = build_session_token()
     trace["session_token"] = session_token
+    trace["policy_version"] = str(load_policy().get("version", ""))
+    rails = GuardrailSession(profile="chat")
+    rails.record_user(user_input)
 
     # Local privacy-preserving password check: do not send password to LLM.
-    confirm_action = _extract_confirm_action(user_input)
-    if confirm_action is not None:
-        record_confirmation(user_id, confirm_action)
-        output = f"[Confirm] action={confirm_action} confirmed for 120s"
+    confirm = _extract_confirm_action(user_input)
+    if confirm is not None:
+        confirm_action, confirm_params = confirm
+        record_confirmation(user_id, confirm_action, confirm_params)
+        bound = "bound" if confirm_params is not None else "action"
+        output = f"[Confirm] action={confirm_action} scope={bound} confirmed for 120s"
         append_audit_event(
             {
                 "kind": "confirm",
@@ -216,6 +244,29 @@ def run_agent(user_input: str, user_id: str = DEFAULT_USER_ID, with_trace: bool 
         print("\n[User]: pwned_check [REDACTED]")
         trace["action"] = "pwned_check"
         params = {"password": password}
+        tool_rail = rails.on_tool("pwned_check", {})
+        trace["pre_tool_rail"] = {
+            "action": tool_rail.action,
+            "reason": tool_rail.reason,
+            "rail": tool_rail.rail,
+            "elapsed_ms": round(tool_rail.elapsed_ms, 3),
+        }
+        if tool_rail.action == "block":
+            trace["blocked"] = True
+            trace["block_reason"] = tool_rail.reason
+            output = "[Blocked] Unsafe tool execution"
+            append_audit_event(
+                {
+                    "kind": "tool_call",
+                    "user_id": user_id,
+                    "action": "pwned_check",
+                    "status": "blocked",
+                    "reason": tool_rail.reason,
+                    "rail": tool_rail.rail,
+                    "policy_version": trace.get("policy_version", ""),
+                }
+            )
+            return (output, trace) if with_trace else output
         decision = authorize_tool_call(user_id, "pwned_check", params)
         if not decision.allowed:
             trace["blocked"] = True
@@ -239,11 +290,14 @@ def run_agent(user_input: str, user_id: str = DEFAULT_USER_ID, with_trace: bool 
             params=params,
             trace=trace,
         )
-        result = _execute_and_filter(
+        result, observation_reason = _execute_and_filter(
             action="pwned_check",
             params=params,
             llm_output="",
+            rails=rails,
         )
+        if observation_reason:
+            trace["observation_rail"] = observation_reason
         new_counter = SESSION_MANAGER.after_tool_execution(user_id, "pwned_check")
         trace["protocol_trace"]["counter_after"] = new_counter
         trace["privacy_session"]["counter_after"] = new_counter
@@ -310,6 +364,46 @@ def run_agent(user_input: str, user_id: str = DEFAULT_USER_ID, with_trace: bool 
     trace["raw_is_json"] = raw_is_json
     if schema_errors:
         print("[Schema] Blocked invalid tool call:", schema_errors)
+        trace["blocked"] = True
+        trace["block_reason"] = "schema_rejected"
+        append_audit_event(
+            {
+                "kind": "tool_call",
+                "user_id": user_id,
+                "action": action,
+                "status": "blocked",
+                "reason": "schema_rejected",
+                "rail": "pre_tool",
+                "schema_errors": schema_errors,
+                "policy_version": trace.get("policy_version", ""),
+            }
+        )
+        output = "[Blocked] Invalid tool call format"
+        return (output, trace) if with_trace else output
+
+    tool_rail = rails.on_tool(action, params if isinstance(params, dict) else {})
+    trace["pre_tool_rail"] = {
+        "action": tool_rail.action,
+        "reason": tool_rail.reason,
+        "rail": tool_rail.rail,
+        "elapsed_ms": round(tool_rail.elapsed_ms, 3),
+    }
+    if tool_rail.action == "block":
+        trace["blocked"] = True
+        trace["block_reason"] = tool_rail.reason
+        append_audit_event(
+            {
+                "kind": "tool_call",
+                "user_id": user_id,
+                "action": action,
+                "status": "blocked",
+                "reason": tool_rail.reason,
+                "rail": tool_rail.rail,
+                "policy_version": trace.get("policy_version", ""),
+            }
+        )
+        output = "[Blocked] Unsafe tool execution"
+        return (output, trace) if with_trace else output
 
     # 工具安全检查（核心）
     decision = authorize_tool_call(user_id, action, params)
@@ -326,7 +420,9 @@ def run_agent(user_input: str, user_id: str = DEFAULT_USER_ID, with_trace: bool 
                 "action": action,
                 "status": "blocked",
                 "reason": decision.reason,
+                "rail": "pre_tool",
                 "schema_errors": schema_errors,
+                "policy_version": trace.get("policy_version", ""),
             }
         )
         return (output, trace) if with_trace else output
@@ -334,7 +430,11 @@ def run_agent(user_input: str, user_id: str = DEFAULT_USER_ID, with_trace: bool 
     # 执行工具
     if action in TOOL_MAP:
         _run_protocol_step(user_id=user_id, action=action, params=params, trace=trace)
-    output = _execute_and_filter(action=action, params=params, llm_output=llm_output)
+    output, observation_reason = _execute_and_filter(
+        action=action, params=params, llm_output=llm_output, rails=rails
+    )
+    if observation_reason:
+        trace["observation_rail"] = observation_reason
     if action in TOOL_MAP:
         new_counter = SESSION_MANAGER.after_tool_execution(user_id, action)
         trace["protocol_trace"]["counter_after"] = new_counter

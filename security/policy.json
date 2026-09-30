@@ -1,0 +1,71 @@
+{
+  "version": "2026.09.30",
+  "confirmation_ttl_s": 120,
+  "patterns": {
+    "sensitive_path": "(^|[\\\\/])(\\.env(\\.|$)|id_rsa|id_ed25519|.*\\.pem|\\.ssh([\\\\/]|$)|credentials(\\.|$)|secrets?\\.(json|ya?ml))",
+    "destructive_command": "\\brm\\s+-[a-z]*r[a-z]*f\\b|\\brm\\s+-[a-z]*f[a-z]*r\\b|\\bdel\\s+/[fq]|\\bformat\\s+[a-z]:|mkfs\\.|\\bdd\\s+if=|:\\(\\)\\s*\\{|\\b(shutdown|reboot)\\b|/dev/tcp/|\\bnc\\s+-e\\b|\\bbash\\s+-i\\b|remove-item\\s+-recurse|\\b(powershell|pwsh)\\b.{0,80}-e(nc|ncodedcommand)\\b|base64\\s+(-d|--decode).{0,80}\\|\\s*(sh|bash|powershell)\\b",
+    "pipe_to_shell": "\\b(curl|wget)\\b.{0,120}\\|\\s*(sh|bash|powershell)\\b",
+    "network_command": "\\b(curl|wget|nc|ncat|scp)\\b|https?://|Invoke-WebRequest|\\biwr\\b",
+    "sensitive_file_read": "(^|[;&|])\\s*(cat|type|Get-Content|more|less)\\s+(/etc/(passwd|shadow)|.+\\.ssh[\\\\/]id_rsa)"
+  },
+  "classifier": {
+    "model": "classifier_model.json",
+    "timeout_ms": 30,
+    "fail_open_tools": ["get_time", "echo", "ls", "list_dir", "read", "read_file", "grep", "search_text", "find", "glob_files"],
+    "fail_closed_tools": [
+      "write",
+      "write_file",
+      "edit",
+      "str_replace",
+      "bash",
+      "run_command",
+      "pwned_check"
+    ],
+    "rails": {
+      "input": {
+        "prompt_injection": 0.62,
+        "sensitive_info": 0.78,
+        "malicious_code": 0.74,
+        "danger_ops": 0.74,
+        "resource_abuse": 0.74
+      },
+      "pre_tool": {
+        "prompt_injection": 0.62,
+        "danger_ops": 0.7,
+        "malicious_code": 0.78,
+        "sensitive_info": 0.74,
+        "resource_abuse": 0.74
+      },
+      "observation": {
+        "prompt_injection": 0.58,
+        "danger_ops": 0.8,
+        "sensitive_info": 0.8
+      },
+      "trajectory": {
+        "prompt_injection": 0.72,
+        "danger_ops": 0.84,
+        "sensitive_info": 0.82,
+        "malicious_code": 0.84
+      },
+      "output": {
+        "prompt_injection": 0.78,
+        "sensitive_info": 0.8
+      }
+    }
+  },
+  "context_model": {
+    "enabled": true,
+    "runtime": "local",
+    "fail_closed": false,
+    "timeout_s": 30,
+    "base_url": "",
+    "model": "trajectory_model.json",
+    "api_key_env": "GUARD_API_KEY",
+    "catalog": [
+      {"id": "AI45Research/AgentDoG1.5-Qwen3.5-0.8B", "role": "pretrained coarse trajectory moderator, served locally"},
+      {"id": "ninty-seven/StepGuard", "role": "4B step and full tool-trajectory guard"},
+      {"id": "AI45Research/AgentDoG1.5-Qwen3.5-4B", "role": "stronger AgentDoG trajectory moderator"},
+      {"id": "meta-llama/Llama-Guard-4-12B", "role": "content taxonomy; weak on tool traces"}
+    ]
+  }
+}

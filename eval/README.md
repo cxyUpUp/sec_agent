@@ -32,7 +32,14 @@ Or:
 python eval/export_report.py
 ```
 
-### What it measures
+### Attack sample library (core metrics)
+
+Primary measurable metrics come from `eval/attack_cases.jsonl`:
+
+- **拦截率 / interception_rate** = `TP / (TP+FN)` on attack samples (~40)
+- **误报率 / false_positive_rate** = `FP / (FP+TN)` on benign samples
+
+These two metrics are placed at the top of the exported report.
 
 - `protocol_flow`: end-to-end protocol checks
   - `handshake_validity`: PCKA-style handshake can be completed and verified
@@ -54,4 +61,14 @@ python eval/export_report.py
   - sensitive tool confirmation bypass attempts
   - rate-limit stress behavior
 - `eval_report.md`: auto-generated report with metrics tables, conclusion, and interview talking points
+
+### Attack probe (expanded interception test)
+
+Offline-friendly probe for injection + tool abuse + confirm/RBAC/rate-limit:
+
+```bash
+python -m eval.attack_probe
+```
+
+Writes `eval/attack_probe_report.json`.
 

@@ -1,7 +1,7 @@
 # Sec_Agent API (PCKA/Ratchet Mainline)
 
 Sec_Agent exposes one mainline:
-Input filtering ¡ú Boundary marking + Random conversation token reinforcement system prompt ¡ú Tool decision ¡ú Permission verification (tool whitelist/RBAC/sensitive operation double confirmation/rate limiting) ¡ú Audit log ¡ú Output de-sensitization.
+Input filtering ï¿½ï¿½ Boundary marking + Random conversation token reinforcement system prompt ï¿½ï¿½ Tool decision ï¿½ï¿½ Permission verification (tool whitelist/RBAC/sensitive operation double confirmation/rate limiting) ï¿½ï¿½ Audit log ï¿½ï¿½ Output de-sensitization.
 
 ## Run
 

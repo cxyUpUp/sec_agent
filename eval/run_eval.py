@@ -16,9 +16,11 @@ from agent.parser import parse_action
 from eval.red_team import evaluate_red_team
 from privacy.secure_channel import get_secure_channel_manager
 from privacy.session_manager import get_session_manager
-from security.guard import authorize_tool_call, record_confirmation
+from security import guard as guard_mod
+from security.guard import ALLOWED_TOOLS, TOOL_POLICY, authorize_tool_call, record_confirmation
 from security.input_filter import detect_injection
 from security.schema import validate_llm_tool_call
+
 
 
 def _load_cases(path: str):
@@ -60,6 +62,71 @@ def _eval_input_filter(cases):
     }
 
 
+def _eval_attack_defense(cases):
+    """
+    Dedicated attack-sample-library metrics.
+
+    拦截率 (interception_rate) = TP / (TP+FN) among attack samples
+    误报率 (false_positive_rate) = FP / (FP+TN) among benign samples
+    """
+    tp = fp = tn = fn = 0
+    attack_total = 0
+    benign_total = 0
+    missed_attacks = []
+    false_alarms = []
+
+    for c in cases:
+        expected_block = bool(c["expected_block"])
+        detect = detect_injection(c["user_input"])
+        got_block = bool(detect.get("blocked"))
+        if expected_block:
+            attack_total += 1
+            if got_block:
+                tp += 1
+            else:
+                fn += 1
+                missed_attacks.append(
+                    {
+                        "id": c.get("id"),
+                        "category": c.get("category"),
+                        "user_input": c.get("user_input"),
+                        "reasons": detect.get("reasons", []),
+                    }
+                )
+        else:
+            benign_total += 1
+            if got_block:
+                fp += 1
+                false_alarms.append(
+                    {
+                        "id": c.get("id"),
+                        "category": c.get("category"),
+                        "user_input": c.get("user_input"),
+                        "reasons": detect.get("reasons", []),
+                    }
+                )
+            else:
+                tn += 1
+
+    interception_rate = (tp / (tp + fn)) if (tp + fn) else None
+    false_positive_rate = (fp / (fp + tn)) if (fp + tn) else None
+    return {
+        "attack_sample_count": attack_total,
+        "benign_sample_count": benign_total,
+        "total": attack_total + benign_total,
+        "tp": tp,
+        "fp": fp,
+        "tn": tn,
+        "fn": fn,
+        "拦截率": interception_rate,
+        "误报率": false_positive_rate,
+        "interception_rate": interception_rate,
+        "false_positive_rate": false_positive_rate,
+        "missed_attacks": missed_attacks[:10],
+        "false_alarms": false_alarms[:10],
+    }
+
+
 def _eval_llm_outputs(cases):
     total = 0
     tool_allowed_correct = 0
@@ -82,13 +149,14 @@ def _eval_llm_outputs(cases):
             schema_ok_count += 1
 
         action, params, schema_errors, raw_is_json = parse_action(llm_output)
-        if action in ("get_time", "echo", "pwned_check"):
-            if action == "pwned_check":
-                record_confirmation("eval_user", "pwned_check")
+        if action in ALLOWED_TOOLS:
+            # Eval user is admin so RBAC does not hide schema/allow decisions.
+            guard_mod.USER_ROLES["eval_user"] = "admin"
+            if TOOL_POLICY.get(action, {}).get("sensitive"):
+                record_confirmation("eval_user", action)
             allowed = authorize_tool_call("eval_user", action, params).allowed
         else:
             allowed = False
-
         if allowed == expected_tool_allowed:
             tool_allowed_correct += 1
 
@@ -303,12 +371,23 @@ def evaluate_all(cases_path: Optional[str] = None):
     here = os.path.dirname(__file__)
     resolved_cases_path = cases_path or os.path.join(here, "cases.jsonl")
     cases = _load_cases(resolved_cases_path)
+    library_path = os.path.join(here, "attack_library.jsonl")
+    benign_path = os.path.join(here, "benign_library.jsonl")
+    if os.path.exists(library_path):
+        attack_cases = _load_cases(library_path)
+        if os.path.exists(benign_path):
+            attack_cases.extend(_load_cases(benign_path))
+    else:
+        attack_cases_path = os.path.join(here, "attack_cases.jsonl")
+        attack_cases = _load_cases(attack_cases_path) if os.path.exists(attack_cases_path) else []
 
     groups = defaultdict(list)
     for c in cases:
         groups[c["kind"]].append(c)
 
     results = {}
+    if attack_cases:
+        results["attack_defense"] = _eval_attack_defense(attack_cases)
     if "input_filter" in groups:
         results["input_filter"] = _eval_input_filter(groups["input_filter"])
     if "llm_output" in groups:
@@ -318,10 +397,16 @@ def evaluate_all(cases_path: Optional[str] = None):
     protocol_flow = _eval_protocol_flow()
     results["protocol_flow"] = protocol_flow
     results["red_team"] = evaluate_red_team()
+    attack = results.get("attack_defense", {})
     results["stages"] = {
+        "拦截率": attack.get("拦截率"),
+        "误报率": attack.get("误报率"),
+        "interception_rate": attack.get("interception_rate"),
+        "false_positive_rate": attack.get("false_positive_rate"),
         "handshake_validity": protocol_flow["handshake_validity"],
         "ratchet_progression": protocol_flow["ratchet_progression"],
-        "policy_blocking_quality": results.get("input_filter", {}).get("block_recall_tpr"),
+        "policy_blocking_quality": attack.get("interception_rate")
+        or results.get("input_filter", {}).get("block_recall_tpr"),
         "sensitive_redaction_quality": results.get("privacy_session", {}).get("redaction_success_rate"),
         "red_team_block_quality": results.get("red_team", {}).get("blocked_expectation_accuracy"),
     }
@@ -332,6 +417,18 @@ def main():
     results = evaluate_all()
 
     print("== Sec_Agent eval ==")
+    if "attack_defense" in results:
+        r = results["attack_defense"]
+        print("\n[attack_defense] 核心指标")
+        print(f"攻击样例数: {r.get('attack_sample_count')}")
+        print(f"良性样例数: {r.get('benign_sample_count')}")
+        print(f"拦截率: {r.get('拦截率')}")
+        print(f"误报率: {r.get('误报率')}")
+        for k, v in r.items():
+            if k in {"拦截率", "误报率", "missed_attacks", "false_alarms"}:
+                continue
+            print(f"{k}: {v}")
+
     if "input_filter" in results:
         r = results["input_filter"]
         print("\n[input_filter]")
